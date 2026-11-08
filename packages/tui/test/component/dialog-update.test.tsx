@@ -48,9 +48,7 @@ test("installation progress replaces checking while the update job is still pend
     setState({ type: "installing", version: "2.0.0" })
     await app.waitForFrame(
       (frame) =>
-        frame.includes("Updating OpenCode") &&
-        frame.includes("Installing OpenCode 2.0.0") &&
-        !frame.includes("Checking"),
+        frame.includes("Updating MyVy") && frame.includes("Installing MyVy 2.0.0") && !frame.includes("Checking"),
     )
     expect(app.captureCharFrame()).not.toContain("Skip")
     pending.reject(new Error("Update service unavailable"))

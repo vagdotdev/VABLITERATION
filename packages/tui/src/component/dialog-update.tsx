@@ -1,4 +1,5 @@
 import { TextAttributes } from "@opentui/core"
+import { Brand } from "@opencode/util/brand"
 import { createEffect, createMemo, createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
@@ -90,7 +91,7 @@ export function DialogUpdate(props: {
       <box flexDirection="row" justifyContent="space-between">
         <text attributes={TextAttributes.BOLD} fg={theme.text.base}>
           {state().type === "installing"
-            ? "Updating OpenCode"
+            ? `Updating ${Brand.product}`
             : state().type === "available" || state().type === "failed"
               ? "Update available"
               : "Update"}
@@ -108,12 +109,12 @@ export function DialogUpdate(props: {
               </Match>
               <Match when={current.type === "available"}>
                 <text fg={theme.text.muted}>
-                  An update is available. After installing, you'll be prompted to restart OpenCode.
+                  An update is available. After installing, you'll be prompted to restart {Brand.product}.
                 </text>
               </Match>
               <Match when={current.type === "installing"}>
                 <Spinner shimmer={theme.text.base}>
-                  {current.type === "installing" ? `Installing OpenCode ${current.version}…` : ""}
+                  {current.type === "installing" ? `Installing ${Brand.product} ${current.version}…` : ""}
                 </Spinner>
               </Match>
               <Match when={current.type === "installed"}>
@@ -122,7 +123,7 @@ export function DialogUpdate(props: {
                 </text>
               </Match>
               <Match when={current.type === "current"}>
-                <text fg={theme.text.muted}>OpenCode is already up to date.</text>
+                <text fg={theme.text.muted}>{Brand.product} is already up to date.</text>
               </Match>
               <Match when={current.type === "unavailable"}>
                 <text fg={theme.text.muted} wrapMode="word">

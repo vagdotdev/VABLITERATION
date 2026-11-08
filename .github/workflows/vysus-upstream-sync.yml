@@ -1,0 +1,46 @@
+name: vysus upstream sync
+
+# Merges upstream OpenCode into a sync-<sha> branch, validates it, and opens a pull request into v2.
+# Conflicts fail the job; resolve them locally with vysus/script/sync-upstream.ts (see vysus/README.md).
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    if: github.repository == 'vagdotdev/VABLITERATION'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: v2
+          fetch-depth: 0
+          # Validation runs upstream code; keep push credentials out of the checkout.
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Merge and validate upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bun vysus/script/sync-upstream.ts
+
+      # Upstream commits change .github/workflows files, and GitHub only accepts pushes of those from a token
+      # with workflow permission, so VYSUS_SYNC_TOKEN is used when it is configured.
+      - name: Open pull request
+        run: |
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          if [ "$branch" = v2 ]; then exit 0; fi
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          gh pr create --base v2 --head "$branch" --title "chore: merge upstream ${branch#sync-}" \
+            --body "Automated upstream merge, validated by vysus/script/sync-upstream.ts. Review before merging; releases stay manual."
+        env:
+          GH_TOKEN: ${{ secrets.VYSUS_SYNC_TOKEN || github.token }}

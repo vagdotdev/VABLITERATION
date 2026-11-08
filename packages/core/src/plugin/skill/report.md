@@ -36,7 +36,7 @@ Collect these values when possible:
   or release if the version output or environment reveals it.
 - Active plugins: inspect opencode config for configured plugins when possible.
   Check likely config locations such as `opencode.json`, `opencode.jsonc`,
-  `.opencode/opencode.json`, and `~/.config/opencode/opencode.json`. Record
+  `.opencode/opencode.json`, and `~/.config/vysus/opencode.json`. Record
   configured plugin entries, local plugin files under `.opencode/plugin/` or
   `.opencode/plugins/`, and note if plugin status could not be determined.
 

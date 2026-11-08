@@ -1,3 +1,4 @@
+import { Brand } from "@opencode/util/brand"
 import { logo } from "../logo"
 
 const reset = "\x1b[0m"
@@ -29,7 +30,7 @@ export function sessionEpilogue(input: { title: string; sessionID?: string }) {
     ...wordmark("  "),
     "",
     `  ${weak("Session")}${bold}${input.title}${reset}`,
-    `  ${weak("Continue")}${bold}opencode -s ${input.sessionID}${reset}`,
+    `  ${weak("Continue")}${bold}${Brand.cli} -s ${input.sessionID}${reset}`,
     "",
   ].join("\n")
 }

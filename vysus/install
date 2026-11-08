@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Installs vysus, the MyVy distribution of OpenCode, on macOS. See vysus/README.md.
+set -euo pipefail
+
+repo="vagdotdev/VABLITERATION"
+root="$HOME/.vysus"
+releases="${VYSUS_RELEASES_URL:-}"
+version=""
+binary=""
+modify_path=true
+setup=true
+print_latest=false
+
+usage() {
+  cat <<EOF
+Install vysus (MyVy) on macOS.
+
+Usage: install [options]
+  -v, --version <version>  Install a specific release, for example 2.0.26-vysus.1
+  -b, --binary <path>      Install a local vysus build instead of downloading a release
+      --no-modify-path     Do not add ~/.vysus/bin to the shell PATH
+      --no-setup           Skip the Abliteration.ai setup prompts
+      --print-latest       Print the latest release version and exit
+  -h, --help               Show this help
+
+Releases come from https://github.com/$repo, through the GitHub CLI when it is signed in
+(required while the repository is private) and through curl otherwise. VYSUS_RELEASES_URL
+selects a mirror with the same layout: latest/download/release.json and download/v<version>/<asset>.
+EOF
+}
+
+die() {
+  echo "install: $*" >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -v | --version)
+      [ $# -ge 2 ] || die "--version needs a value"
+      version="${2#v}"
+      shift 2
+      ;;
+    -b | --binary)
+      [ $# -ge 2 ] || die "--binary needs a path"
+      binary="$2"
+      shift 2
+      ;;
+    --no-modify-path) modify_path=false && shift ;;
+    --no-setup) setup=false && shift ;;
+    --print-latest) print_latest=true && shift ;;
+    -h | --help) usage && exit 0 ;;
+    *) die "unknown option $1 (see --help)" ;;
+  esac
+done
+
+[ "$(uname -s)" = Darwin ] || die "vysus releases are built for macOS only"
+arch="$(uname -m)"
+# A shell translated by Rosetta reports x86_64 on Apple silicon.
+if [ "$arch" = x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then arch=arm64; fi
+case "$arch" in
+  arm64 | aarch64) arch=arm64 ;;
+  x86_64) arch=x64 ;;
+  *) die "unsupported architecture $arch" ;;
+esac
+asset="vysus-darwin-$arch.tar.gz"
+
+# Only versions of this distribution are installed; upstream OpenCode versions would replace it.
+is_release() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+-vysus\.[0-9]+$ ]]
+}
+
+use_gh() {
+  [ -z "$releases" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1
+}
+
+latest() {
+  if use_gh; then
+    gh release view --repo "$repo" --json tagName --jq .tagName | sed 's/^v//'
+    return
+  fi
+  curl -fsSL "${releases:-https://github.com/$repo/releases}/latest/download/release.json" |
+    sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+download() {
+  if use_gh; then
+    gh release download "v$version" --repo "$repo" --pattern "$asset" --pattern SHA256SUMS --dir "$tmp"
+    return
+  fi
+  local base="${releases:-https://github.com/$repo/releases}/download/v$version"
+  curl -fsSL -o "$tmp/$asset" "$base/$asset"
+  curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
+}
+
+# Prints the version of a vysus build, run in a scratch home so the check leaves no files behind.
+identity() {
+  local probe reported found
+  probe="$(mktemp -d "$tmp/probe.XXXXXX")"
+  reported="$(env HOME="$probe" XDG_CONFIG_HOME="$probe/config" XDG_DATA_HOME="$probe/data" \
+    XDG_STATE_HOME="$probe/state" XDG_CACHE_HOME="$probe/cache" TMPDIR="$probe" \
+    "$1" --version 2>/dev/null | tail -n 1)" || true
+  found="${reported#vysus v}"
+  [ "$reported" = "vysus v$found" ] && is_release "$found" ||
+    die "refusing to install $1: it reports '${reported:-nothing}' instead of a vysus release"
+  echo "$found"
+}
+
+place() {
+  cp "$1" "$2.new.$$"
+  chmod "$3" "$2.new.$$"
+  mv -f "$2.new.$$" "$2"
+}
+
+add_to_path() {
+  case ":$PATH:" in *":$root/bin:"*) return ;; esac
+  local config line="export PATH=$root/bin:\$PATH"
+  case "$(basename "${SHELL:-/bin/zsh}")" in
+    zsh) config="${ZDOTDIR:-$HOME}/.zshrc" ;;
+    bash) config="$HOME/.bash_profile" ;;
+    fish)
+      config="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+      line="fish_add_path $root/bin"
+      ;;
+    *) config="$HOME/.profile" ;;
+  esac
+  if [ -f "$config" ] && grep -Fq "$root/bin" "$config"; then return; fi
+  mkdir -p "$(dirname "$config")"
+  printf '\n# vysus\n%s\n' "$line" >>"$config"
+  echo "Added $root/bin to PATH in $config. Open a new terminal to use vysus."
+}
+
+ask() {
+  local answer hint="[Y/n]"
+  [ "$2" = n ] && hint="[y/N]"
+  printf '  %s %s ' "$1" "$hint" >/dev/tty
+  read -r answer </dev/tty || answer=""
+  [[ "${answer:-$2}" =~ ^[Yy] ]]
+}
+
+# The API key goes straight from the terminal into vysus with hidden input; this script never sees it.
+setup_provider() {
+  local config="${XDG_CONFIG_HOME:-$HOME/.config}/vysus/opencode.json"
+  echo
+  echo "Abliteration.ai"
+  echo "  vysus includes the Abliteration.ai provider (OpenAI-compatible, https://api.abliteration.ai/v1)."
+  if $setup && { : </dev/tty; } 2>/dev/null; then
+    if [ ! -e "$config" ] && ask "Make abliteration-ai/abliterated-model the default model?" y; then
+      mkdir -p "$(dirname "$config")"
+      printf '{\n  "model": "abliteration-ai/abliterated-model"\n}\n' >"$config"
+      echo "  Wrote $config"
+    fi
+    if ask "Enter your Abliteration.ai API key now (hidden input)?" y; then
+      "$root/bin/vysus" auth login abliteration-ai </dev/tty >/dev/tty 2>&1 ||
+        echo "  The key was not saved. Run: vysus auth login abliteration-ai"
+    fi
+    return
+  fi
+  echo "  Save your API key (hidden input):  vysus auth login abliteration-ai"
+  echo "  Or export ABLIT_KEY before starting vysus."
+  echo "  Default model: put {\"model\": \"abliteration-ai/abliterated-model\"} in $config"
+}
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/vysus-install.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+if $print_latest; then
+  version="$(latest)"
+  is_release "$version" || die "the latest release '$version' is not a vysus release"
+  echo "$version"
+  exit 0
+fi
+
+mkdir -p "$tmp/package/bin" "$tmp/package/libexec"
+if [ -n "$binary" ]; then
+  [ -f "$binary" ] || die "no such file: $binary"
+  cp "$binary" "$tmp/package/bin/vysus"
+  self="${BASH_SOURCE[0]:-}"
+  [ -f "$self" ] || die "--binary needs this script as a file, for example: bash vysus/install --binary <path>"
+  cp "$self" "$tmp/package/libexec/install"
+  source_dir="$(cd "$(dirname "$self")" && pwd)"
+  if [ -f "$source_dir/../LICENSE" ]; then cp "$source_dir/../LICENSE" "$tmp/package/LICENSE"; fi
+  if [ -f "$source_dir/NOTICE.md" ]; then cp "$source_dir/NOTICE.md" "$tmp/package/NOTICE.md"; fi
+  version="$(identity "$tmp/package/bin/vysus")"
+else
+  [ -n "$version" ] || version="$(latest)"
+  is_release "$version" || die "'$version' is not a vysus release (expected a version like 2.0.26-vysus.1)"
+  echo "Downloading vysus $version for darwin-$arch"
+  download
+  (cd "$tmp" && grep -E "^[0-9a-f]{64}  $asset\$" SHA256SUMS | shasum -a 256 -c - >/dev/null) ||
+    die "checksum verification failed for $asset"
+  tar -xzf "$tmp/$asset" -C "$tmp/package"
+  [ -f "$tmp/package/libexec/install" ] || die "$asset does not contain the installer"
+  [ "$(identity "$tmp/package/bin/vysus")" = "$version" ] || die "$asset does not contain vysus $version"
+fi
+
+mkdir -p "$root/bin" "$root/libexec"
+place "$tmp/package/libexec/install" "$root/libexec/install" 755
+for file in LICENSE NOTICE.md; do
+  if [ -f "$tmp/package/$file" ]; then place "$tmp/package/$file" "$root/$file" 644; fi
+done
+place "$tmp/package/bin/vysus" "$root/bin/vysus" 755
+echo "Installed vysus $version to $root/bin/vysus"
+
+if $modify_path; then add_to_path; fi
+setup_provider

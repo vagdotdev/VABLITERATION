@@ -1,5 +1,6 @@
+import { Brand } from "@opencode/util/brand"
 import { RGBA, TextAttributes } from "@opentui/core"
-import { For, type JSX } from "solid-js"
+import { For, Show, type JSX } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { tint } from "../theme/color"
@@ -50,20 +51,11 @@ export function Logo() {
   }
 
   return (
-    <box>
-      {dimensions().height < 12 ? null : dimensions().width < 22 ? (
+    <box alignItems="center">
+      {dimensions().height < 12 ? null : dimensions().width < 28 ? (
         <For each={go.right.slice(1)}>
           {(line) => <box flexDirection="row">{renderLine(line, theme.text.base, true)}</box>}
         </For>
-      ) : dimensions().width < 44 ? (
-        <>
-          <For each={logo.left.slice(1)}>
-            {(line) => <box flexDirection="row">{renderLine(line, theme.text.muted, false)}</box>}
-          </For>
-          <For each={logo.right}>
-            {(line) => <box flexDirection="row">{renderLine(line, theme.text.base, true)}</box>}
-          </For>
-        </>
       ) : (
         <For each={logo.left}>
           {(line, index) => (
@@ -74,6 +66,11 @@ export function Logo() {
           )}
         </For>
       )}
+      <Show when={dimensions().height >= 12}>
+        <text fg={theme.text.base} selectable={false}>
+          {dimensions().width < 21 ? Brand.product : `${Brand.product} confidential`}
+        </text>
+      </Show>
     </box>
   )
 }

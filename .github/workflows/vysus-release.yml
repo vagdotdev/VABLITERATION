@@ -1,0 +1,47 @@
+name: vysus release
+
+# Builds, verifies, and end-to-end tests a vysus release, then attaches it to a draft GitHub release.
+# Installs and `vysus upgrade` only see the release after someone publishes the draft.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version: <root package.json version>-vysus.<n>, n >= 1"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'vagdotdev/VABLITERATION'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      # Lets the Apple silicon runner execute and verify the darwin-x64 build.
+      - name: Install Rosetta
+        run: softwareupdate --install-rosetta --agree-to-license
+
+      - name: Build and verify release
+        run: bun vysus/script/release.ts --version "$VERSION"
+        env:
+          VERSION: ${{ inputs.version }}
+
+      - name: Install an older build and upgrade to the release
+        run: |
+          previous="$(node -p "require('./package.json').version")-vysus.0"
+          bun vysus/script/release.ts --version "$previous" --target darwin-arm64 --skip-web-ui --skip-install --allow-dirty
+          bun vysus/script/e2e.ts --release "dist/vysus/v$previous" --next "dist/vysus/v$VERSION"
+        env:
+          VERSION: ${{ inputs.version }}
+
+      - name: Create draft release
+        run: gh release create "v$VERSION" dist/vysus/v$VERSION/* --draft --target "$GITHUB_SHA" --title "vysus $VERSION" --generate-notes
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}

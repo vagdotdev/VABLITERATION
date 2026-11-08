@@ -1,3 +1,18 @@
+# MyVy confidential (vysus)
+
+MyVy confidential is a personal macOS distribution of [OpenCode](https://github.com/anomalyco/opencode) v2, installed
+as the `vysus` command. It keeps its own data directory and only updates from this repository's releases.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vagdotdev/VABLITERATION/v2/vysus/install | bash
+```
+
+See [vysus/README.md](vysus/README.md) for setup, updates, and limitations. vysus is built on OpenCode, which is MIT
+licensed (see [LICENSE](LICENSE) and [vysus/NOTICE.md](vysus/NOTICE.md)); it is not affiliated with the OpenCode
+project. The upstream OpenCode README follows.
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>
