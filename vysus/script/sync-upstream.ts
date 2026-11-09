@@ -47,8 +47,11 @@ async function validate() {
   // Package tests use the real home directory unless told otherwise.
   const home = await mkdtemp("/tmp/vysus-sync-")
   await mkdir(path.join(home, "tmp"))
+  const bin = path.join(home, "bin")
   const env = {
     ...process.env,
+    // Core's tests refuse network access, so the ripgrep core would download for them must already be on PATH.
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
     HOME: home,
     XDG_DATA_HOME: path.join(home, "data"),
     XDG_CONFIG_HOME: path.join(home, "config"),
@@ -59,7 +62,12 @@ async function validate() {
   try {
     await $`bun install --frozen-lockfile`
     await $`bun run check`
-    await $`bun run test`.cwd(path.join(root, "packages", "core"))
+    await $`bun vysus/script/ripgrep.ts ${bin}`
+    // A machine's first PowerShell start takes seconds, which would count against the 5 second timeout of whichever
+    // core test starts it first. Later starts, also with another HOME, take a fraction of a second.
+    const pwsh = process.env.SHELL_SCAN_PWSH ?? Bun.which("pwsh") ?? Bun.which("powershell")
+    if (pwsh) await $`${pwsh} -NoLogo -NoProfile -NonInteractive -Command exit`.env(env)
+    await $`bun run test`.cwd(path.join(root, "packages", "core")).env({ ...process.env, PATH: env.PATH })
     for (const name of ["util", "cli", "tui"]) await $`bun test`.cwd(path.join(root, "packages", name)).env(env)
     await $`bun test`.cwd(path.join(root, "vysus", "script")).env(env)
     if (args["skip-build"]) return
