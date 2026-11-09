@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// Builds and verifies vysus release assets for macOS into dist/vysus/v<version>. Publishing stays manual:
-// upload the assets to a draft GitHub release and publish it after review.
+// Builds and verifies vysus release assets for macOS into dist/vysus/v<version>. The vysus upstream sync workflow
+// runs it and publishes the assets with vysus/script/publish.
 //   bun vysus/script/release.ts --version 2.0.26-vysus.1 [--target darwin-arm64] [--skip-web-ui] [--skip-install] [--allow-dirty]
 import { $ } from "bun"
 import { cp, mkdir, rm } from "node:fs/promises"
@@ -65,6 +65,5 @@ await Bun.write(
 console.log(
   dirty
     ? `\nTest assets in ${path.relative(root, out)} were built from uncommitted changes. Do not publish them.`
-    : `\nRelease assets in ${path.relative(root, out)}. After review, publish them as a draft and promote manually:
-  gh release create v${version} ${path.relative(root, out)}/* --repo ${Brand.repository} --draft --title "vysus ${version}"`,
+    : `\nRelease assets in ${path.relative(root, out)}. Releases of ${Brand.repository} are published by its vysus upstream sync workflow.`,
 )

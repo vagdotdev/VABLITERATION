@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Integrates upstream OpenCode into the checked-out vysus commit as one new commit whose only parent is that commit.
+# Upstream history never enters v2, and upstream's workflows are parked inert in vysus/upstream-github, so the
+# commit leaves .github/workflows unchanged: GitHub accepts its push from a GITHUB_TOKEN without the workflows
+# permission, and upstream workflows never become active. vysus/script/upstream-commit stores the upstream commit
+# integrated last; it is the merge base of the next integration.
+#   bash vysus/script/integrate [--remote <url>] [--ref v2]
+#   bash vysus/script/integrate --continue   (after resolving conflicts and staging the result with git add)
+# Prints the new commit and switches to a sync-<upstream sha> branch on it. Prints nothing when upstream is already
+# integrated. Exits 2 on conflicts and leaves the merge in the working tree to be resolved.
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+remote=https://github.com/anomalyco/opencode.git
+ref=v2
+resume=false
+# GitHub runs every file in .github/workflows. Only these stay there; upstream's workflows and the actions only
+# they use live, inert, in vysus/upstream-github.
+workflows=(vysus-upstream-sync.yml)
+actions=(setup-bun)
+state="$(git rev-parse --git-dir)/vysus-integration"
+
+fail() {
+  echo "integrate: $*" >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --remote) remote="${2:?--remote needs a URL}" && shift 2 ;;
+    --ref) ref="${2:?--ref needs a branch}" && shift 2 ;;
+    --continue) resume=true && shift ;;
+    *) fail "unknown option $1" ;;
+  esac
+done
+
+# Replaces upstream's .github/workflows and .github/actions with an inert copy, then restores the vysus workflows
+# and the upstream actions they use. This also resolves any merge conflict in those paths.
+park() {
+  git rm -r -q -f --ignore-unmatch vysus/upstream-github .github/workflows .github/actions
+  git checkout "$upstream" -- .github/workflows .github/actions
+  mkdir -p vysus/upstream-github
+  git mv .github/workflows vysus/upstream-github/workflows
+  git mv .github/actions vysus/upstream-github/actions
+  git checkout HEAD -- "${workflows[@]/#/.github/workflows/}"
+  mkdir -p .github/actions
+  for name in "${actions[@]}"; do git mv "vysus/upstream-github/actions/$name" ".github/actions/$name"; done
+}
+
+finish() {
+  [ -z "$(git diff --name-only --diff-filter=U)" ] && git diff --quiet ||
+    fail "resolve every conflict and stage the result with git add first"
+  local result
+  result="$(git commit-tree "$(git write-tree)" -p "$base" -m "chore: integrate upstream $ref ${upstream:0:10}" \
+    -m "Upstream OpenCode $ref $previous..$upstream from $remote.")"
+  git merge --quit
+  git reset -q --soft "$result"
+  git switch -q -C "sync-${upstream:0:10}"
+  rm -f "$state"
+  echo "$result"
+}
+
+if $resume; then
+  [ -f "$state" ] || fail "no integration is in progress"
+  read -r base previous upstream ref remote <"$state"
+  [ "$(git rev-parse -q --verify MERGE_HEAD || true)" = "$upstream" ] ||
+    fail "the merge of upstream ${upstream:0:10} is no longer in progress; start again with vysus/script/integrate"
+  finish
+  exit 0
+fi
+
+[ -z "$(git status --porcelain)" ] || fail "commit or stash local changes first"
+base="$(git rev-parse HEAD)"
+previous="$(cat vysus/script/upstream-commit)"
+git fetch -q --no-tags "$remote" "$ref"
+upstream="$(git rev-parse FETCH_HEAD)"
+if [ "$upstream" = "$previous" ]; then
+  echo "Already integrated upstream $ref ${upstream:0:10}" >&2
+  exit 0
+fi
+git merge-base --is-ancestor "$previous" "$upstream" ||
+  fail "upstream $ref ${upstream:0:10} does not contain the last integrated commit ${previous:0:10}; its history was rewritten"
+changed="$(git diff --name-only "$previous" "$upstream" -- vysus)"
+[ -z "$changed" ] || fail "upstream changed files under vysus/, which belong to this distribution: $changed"
+
+# A commit with the vysus tree on top of the last integrated upstream commit makes git merge use that commit as
+# the merge base, so exactly upstream's new changes are merged into the vysus changes.
+git checkout -q --detach "$(git commit-tree "$base^{tree}" -p "$previous" -m "vysus tree of $base")"
+echo "$base $previous $upstream $ref $remote" >"$state"
+git merge -q --no-ff --no-commit "$upstream" >&2 || true
+[ "$(git rev-parse -q --verify MERGE_HEAD || true)" = "$upstream" ] || fail "git merge of upstream ${upstream:0:10} failed"
+park
+echo "$upstream" >vysus/script/upstream-commit
+git add vysus/script/upstream-commit
+conflicts="$(git diff --name-only --diff-filter=U)"
+if [ -n "$conflicts" ]; then
+  cat >&2 <<EOF
+Merging upstream $ref ${upstream:0:10} stopped on conflicts in:
+$conflicts
+
+Workflow files are already resolved. Resolve the rest so the vysus changes survive, stage them with git add, and run
+  bun vysus/script/sync-upstream.ts --continue
+To give up instead: git merge --abort && git switch -
+EOF
+  exit 2
+fi
+finish

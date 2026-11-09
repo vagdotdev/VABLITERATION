@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Publishes what the vysus upstream sync workflow planned and built: fast-forwards v2 from --base to --commit
+# (unpacked from --bundle when it is a new integration commit) and publishes --assets as the latest release
+# v<--version> on that commit. It runs only git, gh, jq, and shasum, never code from the repository, which is why the
+# workflow lets this job push and release. Every step can be repeated: rerunning after a partial failure finishes the
+# release, also when its tag already exists, and only a complete release (vysus/script/release-state) is left alone.
+#   bash vysus/script/publish --base <sha> --commit <sha> --version <version> --assets <dir> [--bundle <file>]
+#     [--repo <owner/name>]
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+base=""
+commit=""
+version=""
+assets=""
+bundle=""
+repo="${GITHUB_REPOSITORY:-vagdotdev/VABLITERATION}"
+names=(vysus-darwin-arm64.tar.gz vysus-darwin-x64.tar.gz SHA256SUMS release.json)
+
+fail() {
+  echo "publish: $*" >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base) base="${2:?--base needs a commit}" && shift 2 ;;
+    --commit) commit="${2:?--commit needs a commit}" && shift 2 ;;
+    --version) version="${2:?--version needs a version}" && shift 2 ;;
+    --assets) assets="${2:?--assets needs a directory}" && shift 2 ;;
+    --bundle) bundle="${2:?--bundle needs a file}" && shift 2 ;;
+    --repo) repo="${2:?--repo needs owner/name}" && shift 2 ;;
+    *) fail "unknown option $1" ;;
+  esac
+done
+[ -n "$base" ] && [ -n "$commit" ] && [ -n "$assets" ] || fail "--base, --commit, and --assets are required"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-vysus\.[0-9]+$ ]] || fail "--version '$version' is not a vysus release version"
+
+if [ "$commit" != "$base" ]; then
+  [ -f "$bundle" ] || fail "--bundle is required to publish the new commit $commit"
+  git bundle unbundle "$bundle" >/dev/null
+  # Only a single-parent child of v2 that leaves workflows and the vysus scripts alone may be pushed, so the push
+  # needs no workflows permission and later runs keep executing scripts that a person pushed.
+  [ "$(git rev-list --parents -n 1 "$commit")" = "$commit $base" ] || fail "$commit is not a single-parent child of $base"
+  changed="$(git diff --name-only "$base" "$commit" -- .github/workflows vysus \
+    ':(exclude)vysus/upstream-github' ':(exclude)vysus/script/upstream-commit')"
+  [ -z "$changed" ] || fail "$commit changes files that only a person may change: $changed"
+fi
+
+[ "$(ls "$assets" | sort)" = "$(printf '%s\n' "${names[@]}" | sort)" ] || fail "$assets must hold exactly ${names[*]}"
+jq -e --arg version "$version" --arg commit "$commit" '.version == $version and .commit == $commit' \
+  "$assets/release.json" >/dev/null || fail "release.json does not describe $version built from $commit"
+(cd "$assets" && shasum -a 256 -c SHA256SUMS >/dev/null &&
+  [ "$(cut -d ' ' -f 3 SHA256SUMS | sort | xargs)" = "vysus-darwin-arm64.tar.gz vysus-darwin-x64.tar.gz" ]) ||
+  fail "SHA256SUMS does not match both archives"
+
+tagged="$(git ls-remote --tags origin | awk -v name="refs/tags/v$version" '$2 == name || $2 == name "^{}" { sha = $1 } END { print sha }')"
+[ -z "$tagged" ] || [ "$tagged" = "$commit" ] || fail "tag v$version already exists on another commit, $tagged"
+# A tag alone is no release: one that is missing, a draft, or short of assets is finished below.
+state="$(bash vysus/script/release-state "$version" "$repo")"
+if [ "$tagged" = "$commit" ] && [ "$state" = complete ]; then
+  echo "publish: v$version is already released on $commit" >&2
+  exit 0
+fi
+
+head="$(git ls-remote origin refs/heads/v2 | cut -f 1)"
+if [ "$head" = "$base" ] && [ "$commit" != "$base" ]; then
+  git push -q origin "$commit:refs/heads/v2"
+elif [ "$head" != "$commit" ]; then
+  fail "v2 moved from $base to $head while this run was building; the next run starts from the new head"
+fi
+
+if [ "$state" = incomplete ]; then
+  gh release upload "v$version" "${names[@]/#/$assets/}" --repo "$repo" --clobber
+else
+  # A draft left by an interrupted run is invisible to installs and updates; replace it. Deleting a release keeps its tag.
+  if [ "$state" = draft ]; then gh release delete "v$version" --repo "$repo" --yes; fi
+  gh release create "v$version" "${names[@]/#/$assets/}" --repo "$repo" --target "$commit" --latest \
+    --title "vysus $version" \
+    --notes "MyVy built from upstream OpenCode v2 at anomalyco/opencode@$(git show "$commit:vysus/script/upstream-commit") (vysus commit $commit)."
+fi
+echo "publish: released v$version on $commit" >&2

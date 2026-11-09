@@ -29,7 +29,7 @@ const make = Effect.gen(function* () {
   const binary = path.join(root, "bin", Brand.cli)
   const executable = yield* fs.realPath(process.execPath).pipe(Effect.orElseSucceed(() => process.execPath))
   const installed = yield* fs.realPath(binary).pipe(Effect.orElseSucceed(() => binary))
-  const retry = `Fix the issue above, or reinstall ${Brand.cli} from https://github.com/${Brand.repository}.`
+  const retry = `Fix the issue above, or reinstall ${Brand.cli} from https://github.com/${Brand.repository}. Private releases download only through the GitHub CLI: run gh auth login with an account that has access.`
 
   const readPolicy = Effect.fnUntraced(function* () {
     const values = yield* Effect.forEach(["config.json", "opencode.json", "opencode.jsonc"], (name) =>
@@ -38,7 +38,7 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => undefined),
       ),
     )
-    return values.findLast((value) => value !== undefined) ?? "notify"
+    return values.findLast((value) => value !== undefined) ?? "auto"
   })
 
   const runInstaller = (title: string, args: string[], timeout: Duration.Input) =>

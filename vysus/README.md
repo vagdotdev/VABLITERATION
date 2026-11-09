@@ -6,12 +6,30 @@ MIT licensed; `LICENSE` and `vysus/NOTICE.md` ship with every release and are in
 
 ## Install
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/vagdotdev/VABLITERATION/v2/vysus/install | bash
-```
+The repository is private, so installs and updates download releases through the [GitHub CLI](https://cli.github.com)
+signed in to an account with access to `vagdotdev/VABLITERATION`. Without a signed-in `gh`, the installer falls back
+to `curl`, which cannot see a private repository's releases.
 
-Pass options after `bash -s --`, for example `| bash -s -- --version 2.0.26-vysus.1 --no-modify-path`. The installer
-downloads with `curl`, or with the [GitHub CLI](https://cli.github.com) when it is signed in. The installer:
+1. The owner invites your GitHub account: Settings → Collaborators → Add people, or
+   `gh api -X PUT repos/vagdotdev/VABLITERATION/collaborators/<username>`. Collaborators on a personal repository get
+   write access, which includes publishing releases that installed clients update to, so invite only people you trust
+   with that.
+2. Accept the invitation from GitHub's email or at https://github.com/vagdotdev/VABLITERATION/invitations.
+3. Sign in to the GitHub CLI with that account and check that it can see the releases:
+
+   ```sh
+   brew install gh
+   gh auth login                                   # GitHub.com; the default scopes include private repositories
+   gh release view --repo vagdotdev/VABLITERATION  # shows the latest release once you have access
+   ```
+
+4. Install:
+
+   ```sh
+   gh api -H "Accept: application/vnd.github.raw" "repos/vagdotdev/VABLITERATION/contents/vysus/install?ref=v2" | bash
+   ```
+
+Pass options after `bash -s --`, for example `| bash -s -- --version 2.0.26-vysus.1 --no-modify-path`. The installer:
 
 - downloads `vysus-darwin-<arch>.tar.gz` for the latest published release (or `--version 2.0.26-vysus.1`),
 - checks it against the release's `SHA256SUMS`,
@@ -52,15 +70,32 @@ Existing OpenCode sessions and credentials are not visible in vysus, and vysus n
 
 ## Updates
 
-`vysus upgrade`, the in-app update dialog, and automatic updates all run `~/.vysus/libexec/install`. They:
+vysus installs new releases automatically: while the terminal UI is open, it checks for the latest release at startup
+and every 10 minutes and installs it. Automatic updates, `vysus upgrade`, and the in-app update dialog all run
+`~/.vysus/libexec/install`. They:
 
 - refuse `--method npm|pnpm|bun|yarn|vp|brew`, because those install upstream OpenCode over vysus,
 - refuse versions that are not `X.Y.Z-vysus.N`, including when the latest release reports one,
 - only see published GitHub releases; drafts are invisible until someone publishes them,
+- need the signed-in GitHub CLI described under [Install](#install) while the repository is private,
 - rely on the installer's checksum and identity checks before replacing the binary.
 
-Builds outside `~/.vysus/bin` (for example `bun run dev`) never update themselves. Set `"update": "disable"`,
-`"notify"` (default), or `"auto"` in `~/.config/vysus/opencode.json`, or `OPENCODE_DISABLE_AUTOUPDATE=1`.
+Builds outside `~/.vysus/bin` (for example `bun run dev`) never update themselves. `"update": "auto"` is the default.
+To opt out of automatic installs, set `"update": "notify"` (check and only tell you) or `"update": "disable"` (no
+checks) in `~/.config/vysus/opencode.json`; `"autoupdate": false` and `OPENCODE_DISABLE_AUTOUPDATE=1` also stop
+checks. An explicit setting always wins over the default.
+
+### Upgrading from 2.0.26-vysus.1
+
+vysus 2.0.26-vysus.1 only tells you about new releases; it never installs them by itself. Upgrade it once by hand,
+after signing in to the GitHub CLI as described under [Install](#install):
+
+```sh
+gh auth status   # shows the account with access to vagdotdev/VABLITERATION
+vysus upgrade
+```
+
+The release that this installs updates itself automatically from then on.
 
 ## Maintaining the fork
 
@@ -111,12 +146,13 @@ Release assets are built only from committed source. `release.ts` refuses uncomm
    `bun vysus/script/release.ts --version 2.0.26-vysus.1` (both macOS architectures; verifying `darwin-x64` on Apple
    silicon needs Rosetta).
 3. The workflow attaches `vysus-darwin-arm64.tar.gz`, `vysus-darwin-x64.tar.gz`, `SHA256SUMS`, and `release.json`
-   to a draft release. Publish the draft to make it the update target.
+   to a draft release. Publish the draft to make it the update target; installed clients that have not opted out
+   install it automatically.
 
 ### Checks
 
 ```sh
-cd packages/cli && bun test test/fork-updater.test.ts
+cd packages/cli && bun test test/fork-updater.test.ts test/fork-updater-run.test.ts
 cd packages/tui && bun test test/component/logo.test.tsx
 bun vysus/script/verify.ts <path to vysus binary> --version <version>
 bun vysus/script/e2e.ts --release dist/vysus/v<older> --next dist/vysus/v<newer>
@@ -137,7 +173,7 @@ bun vysus/script/e2e.ts --release dist/vysus/v<older> --next dist/vysus/v<newer>
 - The bundled model catalog lists the Abliteration.ai models known at the time of the upstream snapshot; newer models
   may need the catalog refresh or a `providers` entry in config.
 - Updates move to whatever the latest published release is, even if it is older than the installed one, so
-  publishing an older release is a rollback.
+  publishing an older release rolls back every client that installs updates automatically.
 - `vysus uninstall` removes the cache and PATH entry and prints the command that removes the binary. `~/.vysus`
   also holds the updater script, license files, and Plan agent plans (`~/.vysus/plan`); delete it yourself.
 - Upstream's npm packages, Dockerfile, Homebrew, AUR, desktop, and publish scripts are not adapted for vysus.

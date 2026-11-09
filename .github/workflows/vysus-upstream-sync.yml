@@ -1,46 +1,198 @@
 name: vysus upstream sync
 
-# Merges upstream OpenCode into a sync-<sha> branch, validates it, and opens a pull request into v2.
-# Conflicts fail the job; resolve them locally with vysus/script/sync-upstream.ts (see vysus/README.md).
+# Releases MyVy automatically from upstream OpenCode v2, without a person for clean updates:
+# - plan (Linux, hourly, read-only token) runs only git, awk, jq, and gh. It releases the v2 head as is when it has
+#   no complete release yet (the first run, a change a person pushed, or a release that failed after tagging).
+#   Otherwise, when upstream v2 moved past vysus/script/upstream-commit, vysus/script/integrate merges it into one
+#   commit whose only parent is v2. Upstream history never enters v2 and upstream workflows stay inert in
+#   vysus/upstream-github, so the commit leaves .github/workflows alone and GITHUB_TOKEN may push it.
+# - check (Linux) and build (macOS) run upstream code with a read-only token and no stored credentials: checks and
+#   tests, then both macOS release archives, binary verification, and the installer upgrade test.
+# - publish (Linux) runs only git, gh, jq, and shasum from v2. It fast-forwards v2 to the planned commit and
+#   publishes the archives as the latest release. GITHUB_TOKEN pushes trigger no workflows, so it releases itself.
+# Merge conflicts, failed checks, or a v2 that moved during the run fail before anything is pushed; they need a
+# person (bun vysus/script/sync-upstream.ts). Later runs retry from whatever state the last run left.
 on:
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
+
+# One run at a time; a run that is still building finishes before the next one plans.
+concurrency:
+  group: vysus-upstream-sync
+  cancel-in-progress: false
 
 jobs:
-  sync:
+  plan:
     if: github.repository == 'vagdotdev/VABLITERATION'
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      base: ${{ steps.plan.outputs.base }}
+      commit: ${{ steps.plan.outputs.commit }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: v2
-          fetch-depth: 0
-          # Validation runs upstream code; keep push credentials out of the checkout.
+
+      - name: Plan
+        id: plan
+        run: bash vysus/script/plan --bundle "$RUNNER_TEMP/integration.bundle" >>"$GITHUB_OUTPUT"
+        env:
+          # Read-only (this job has contents: read): checks whether the release on the v2 head is complete.
+          GH_TOKEN: ${{ github.token }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
+      - name: Upload integration commit
+        if: steps.plan.outputs.action == 'integrate'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: integration
+          path: ${{ runner.temp }}/integration.bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  check:
+    needs: plan
+    if: needs.plan.outputs.action != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          # Upstream code runs in this job; keep the token out of the checkout.
           persist-credentials: false
+
+      - name: Download integration commit
+        if: needs.plan.outputs.action == 'integrate'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: integration
+          path: ${{ runner.temp }}
+
+      - name: Check out the integration commit
+        if: needs.plan.outputs.action == 'integrate'
+        run: |
+          git bundle unbundle "$RUNNER_TEMP/integration.bundle" >/dev/null
+          git checkout -q --detach "$COMMIT"
+        env:
+          COMMIT: ${{ needs.plan.outputs.commit }}
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
-      - name: Merge and validate upstream
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          bun vysus/script/sync-upstream.ts
+      - name: Checks and tests
+        run: bun vysus/script/sync-upstream.ts --validate --skip-build
 
-      # Upstream commits change .github/workflows files, and GitHub only accepts pushes of those from a token
-      # with workflow permission, so VYSUS_SYNC_TOKEN is used when it is configured.
-      - name: Open pull request
+  build:
+    needs: plan
+    if: needs.plan.outputs.action != 'none'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          # Upstream code runs in this job; keep the token out of the checkout.
+          persist-credentials: false
+
+      - name: Download integration commit
+        if: needs.plan.outputs.action == 'integrate'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: integration
+          path: ${{ runner.temp }}
+
+      - name: Check out the integration commit
+        if: needs.plan.outputs.action == 'integrate'
         run: |
-          branch="$(git rev-parse --abbrev-ref HEAD)"
-          if [ "$branch" = v2 ]; then exit 0; fi
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
-          gh pr create --base v2 --head "$branch" --title "chore: merge upstream ${branch#sync-}" \
-            --body "Automated upstream merge, validated by vysus/script/sync-upstream.ts. Review before merging; releases stay manual."
+          git bundle unbundle "$RUNNER_TEMP/integration.bundle" >/dev/null
+          git checkout -q --detach "$COMMIT"
         env:
-          GH_TOKEN: ${{ secrets.VYSUS_SYNC_TOKEN || github.token }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      # Lets the Apple silicon runner execute and verify the darwin-x64 build.
+      - name: Install Rosetta
+        run: softwareupdate --install-rosetta --agree-to-license
+
+      - name: Build and verify release
+        run: bun vysus/script/release.ts --version "$VERSION"
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+
+      - name: Install an older build and upgrade to the release
+        run: |
+          previous="$(node -p "require('./package.json').version")-vysus.0"
+          bun vysus/script/release.ts --version "$previous" --target darwin-arm64 --skip-web-ui --skip-install --allow-dirty
+          bun vysus/script/e2e.ts --release "dist/vysus/v$previous" --next "dist/vysus/v$VERSION"
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          path: dist/vysus/v${{ needs.plan.outputs.version }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [plan, check, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      # Only git, gh, jq, and shasum run below, from this commit; nothing built or tested upstream code runs here.
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+
+      - name: Download integration commit
+        if: needs.plan.outputs.action == 'integrate'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: integration
+          path: ${{ runner.temp }}
+
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+
+      - name: Push and release
+        run: >-
+          bash vysus/script/publish --base "$BASE" --commit "$COMMIT" --version "$VERSION"
+          --assets "$RUNNER_TEMP/release" --bundle "$RUNNER_TEMP/integration.bundle"
+        env:
+          BASE: ${{ needs.plan.outputs.base }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          GH_TOKEN: ${{ github.token }}

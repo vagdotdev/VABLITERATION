@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Decides what the vysus upstream sync workflow does next and prints it as step outputs:
+#   action=none       the v2 head is released and upstream v2 has not moved past vysus/script/upstream-commit
+#   action=release    the v2 head has no complete release yet (the first run, a change a person pushed, or a run
+#                     that failed after tagging): release it as is, reusing the version of a tag already on it
+#   action=integrate  upstream moved: vysus/script/integrate merged it into a new commit on top of the v2 head,
+#                     which is written to --bundle
+# along with base (the v2 head), commit (the commit to release), and version (<package.json version>-vysus.<n>,
+# one more than the highest n tagged for that package.json version). It runs only git, awk, jq, and gh (read-only),
+# never code from the repository, so it may hold a token. Merge conflicts make it fail before it prints anything.
+#   bash vysus/script/plan --bundle <file> [--remote <url>] [--ref v2]
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+remote=https://github.com/anomalyco/opencode.git
+ref=v2
+bundle=""
+
+fail() {
+  echo "plan: $*" >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bundle) bundle="${2:?--bundle needs a file}" && shift 2 ;;
+    --remote) remote="${2:?--remote needs a URL}" && shift 2 ;;
+    --ref) ref="${2:?--ref needs a branch}" && shift 2 ;;
+    *) fail "unknown option $1" ;;
+  esac
+done
+[ -n "$bundle" ] || fail "--bundle is required"
+
+# Prints "<commit> <version>" for every release tag v<version>, peeling annotated tags.
+releases="$(git ls-remote --tags origin 'refs/tags/v*' | awk '
+  {
+    name = substr($2, 11)
+    peeled = substr(name, length(name) - 2) == "^{}"
+    if (peeled) name = substr(name, 1, length(name) - 3)
+    if (peeled || !(name in commit)) commit[name] = $1
+  }
+  END { for (name in commit) if (name ~ /^v[0-9]+\.[0-9]+\.[0-9]+-vysus\.[0-9]+$/) print commit[name], substr(name, 2) }')"
+
+next_version() {
+  local version
+  version="$(git show "$1:package.json" | jq -r .version)"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    fail "package.json version '$version' is not MAJOR.MINOR.PATCH, so it cannot take a -vysus.<n> release number"
+  echo "$releases" | awk -v prefix="$version-vysus." '
+    index($2, prefix) == 1 && substr($2, length(prefix) + 1) + 0 > last { last = substr($2, length(prefix) + 1) + 0 }
+    END { print prefix (last + 1) }'
+}
+
+base="$(git rev-parse HEAD)"
+commit="$base"
+version=""
+# A tag alone is no release: the run that created it may have failed before the release was published with every
+# asset. Such a head is released again under the version of its tag.
+released=false
+for tagged in $(echo "$releases" | awk -v commit="$base" '$1 == commit { print $2 }'); do
+  version="$tagged"
+  state="$(bash vysus/script/release-state "$tagged")"
+  if [ "$state" = complete ]; then released=true; fi
+done
+if ! $released; then
+  action=release
+  [ -n "$version" ] || version="$(next_version "$base")"
+else
+  version=""
+  upstream="$(git ls-remote --exit-code "$remote" "refs/heads/$ref" | cut -f1)"
+  if [ "$upstream" = "$(cat vysus/script/upstream-commit)" ]; then
+    action=none
+  else
+    action=integrate
+    commit="$(bash vysus/script/integrate --remote "$remote" --ref "$ref")"
+    version="$(next_version "$commit")"
+    git bundle create -q "$bundle" HEAD "^$base"
+  fi
+fi
+
+echo "plan: $action ${version:+$version }on ${commit:0:10} (v2 is ${base:0:10})" >&2
+printf 'action=%s\nbase=%s\ncommit=%s\nversion=%s\n' "$action" "$base" "$commit" "$version"

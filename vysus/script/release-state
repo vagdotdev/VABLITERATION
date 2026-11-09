@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Prints the state of the GitHub release v<version>: complete (published, not a draft, every asset uploaded),
+# incomplete (published without every asset), draft, or missing. A token without write access sees a draft as missing.
+# Any other gh failure fails this script, so an outage is never mistaken for a missing release.
+#   bash vysus/script/release-state <version> [<owner/name>]
+set -euo pipefail
+
+error="$(mktemp)"
+trap 'rm -f "$error"' EXIT
+if ! release="$(gh release view "v${1:?a version is required}" --repo "${2:-${GITHUB_REPOSITORY:-vagdotdev/VABLITERATION}}" \
+  --json isDraft,assets 2>"$error")"; then
+  grep -qx "release not found" "$error" || { cat "$error" >&2 && exit 1; }
+  echo missing
+  exit 0
+fi
+echo "$release" | jq -r '
+  if .isDraft then "draft"
+  elif (["vysus-darwin-arm64.tar.gz", "vysus-darwin-x64.tar.gz", "SHA256SUMS", "release.json"]
+    - [.assets[] | select((.state // "uploaded") == "uploaded") | .name]) == [] then "complete"
+  else "incomplete" end'
