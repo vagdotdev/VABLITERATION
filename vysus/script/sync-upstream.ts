@@ -68,7 +68,8 @@ async function validate() {
     const pwsh = process.env.SHELL_SCAN_PWSH ?? Bun.which("pwsh") ?? Bun.which("powershell")
     if (pwsh) await $`${pwsh} -NoLogo -NoProfile -NonInteractive -Command exit`.env(env)
     await $`bun run test`.cwd(path.join(root, "packages", "core")).env({ ...process.env, PATH: env.PATH })
-    for (const name of ["util", "cli", "tui"]) await $`bun test`.cwd(path.join(root, "packages", name)).env(env)
+    // Each package's test script holds its test options, such as the 30 second timeout the cli and tui tests need.
+    for (const name of ["util", "cli", "tui"]) await $`bun run test`.cwd(path.join(root, "packages", name)).env(env)
     await $`bun test`.cwd(path.join(root, "vysus", "script")).env(env)
     if (args["skip-build"]) return
     for (const build of ["0", "1"])
