@@ -23,9 +23,12 @@ type Job = {
   env?: Record<string, string>
   steps: Step[]
 }
+type Triggers = { schedule: { cron: string }[] }
 type Workflow = {
-  // Bun.YAML reads the unquoted `on` key as the YAML 1.1 boolean true; GitHub reads it as "on".
-  true: { schedule: { cron: string }[] }
+  // GitHub reads the unquoted `on` key as "on". Bun.YAML reads it as "on" or, in versions that follow YAML 1.1, as the
+  // boolean true.
+  on?: Triggers
+  true?: Triggers
   permissions: Record<string, string>
   concurrency: { group: string; "cancel-in-progress": boolean }
   jobs: Record<string, Job>
@@ -41,9 +44,12 @@ test("only the vysus workflow is active, and every script keeps it", async () =>
 })
 
 test("polls hourly or on demand, one run at a time", () => {
-  expect(Object.keys(workflow.true).sort()).toEqual(["schedule", "workflow_dispatch"])
-  expect(workflow.true.schedule).toHaveLength(1)
-  const [minute, ...rest] = workflow.true.schedule[0].cron.split(" ")
+  const triggers = [workflow.on, workflow.true].filter((value) => value !== undefined)
+  expect(triggers).toHaveLength(1)
+  const [on] = triggers
+  expect(Object.keys(on).sort()).toEqual(["schedule", "workflow_dispatch"])
+  expect(on.schedule).toHaveLength(1)
+  const [minute, ...rest] = on.schedule[0].cron.split(" ")
   expect(rest).toEqual(["*", "*", "*", "*"])
   // Scheduled runs over one day: one per hour.
   const day = Array.from({ length: 24 * 60 }, (_, index) => index).filter((index) => index % 60 === Number(minute))
